@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 import { GameState, GameStateSchema } from "../types";
 
@@ -10,32 +11,37 @@ const getClient = () => {
 const MODEL_NAME = 'gemini-2.5-flash';
 
 const SYSTEM_INSTRUCTION = `
-You are an advanced Poker GTO (Game Theory Optimal) Solver and Coach.
-Your goal is to simulate a high-stakes Texas Hold'em hand and provide real-time strategic feedback.
-You act as the Game Engine (dealing cards, managing chips) AND the Opponent (Villain) AND the Coach.
+You are an advanced Poker GTO Solver and Engine.
+You simulate a **6-max Texas Hold'em** game.
+You control the Game State and all Opponents (Villains).
+One player is the "Hero" (User).
+
+Rules:
+1. **Multiplayer**: Simulate 6 players (Seat 1-6). Hero is one of them.
+2. **Positions**: Assign standard positions: BTN, SB, BB, UTG, HJ, CO.
+3. **Integrity**: Manage pot, stacks, and legal moves accurately.
+4. **Strategy**: Play opponents optimally (GTO) or exploitatively.
+5. **Showdown**: Do not reveal opponent cards until 'Showdown' phase.
+6. **Analysis**: In the 'analysis' field, explain the strategic situation for the Hero (Ranges, EV, Equity).
+7. **Output**: Pure JSON matching the schema.
 
 Behavior:
-1. Maintain the integrity of the poker game logic (stacks, pot sizes, legal moves).
-2. Play the Villain optimally (or exploitatively if the user makes a mistake).
-3. Provide concise, high-level GTO commentary in the 'analysis' field. Focus on ranges, equity, blockers, and frequencies.
-4. Do not reveal the Villain's hand until the 'Showdown' stage.
-5. Output pure JSON matching the schema.
-
-When generating a new scenario, set up a classic interesting spot (e.g., 3-bet pot, monochrome flop, paired board).
+- If Hero folds, simulate the rest of the hand quickly or just end it and award pot to winner.
+- If it is Hero's turn, wait.
 `;
 
 export const startNewScenario = async (): Promise<GameState> => {
   const ai = getClient();
   
   const prompt = `
-    Create a new, challenging Texas Hold'em scenario. 
-    - Hero is a serious player.
-    - Set effective stacks to 100BB (assume 100BB = 1000 chips).
-    - Start either Preflop facing a specific action, or on the Flop.
-    - Ensure 'heroHand' is defined (2 cards).
-    - Ensure 'board' matches the street (0 for preflop, 3 for flop).
-    - Provide an initial 'analysis' describing the setup and preflop ranges involved.
-    - 'isHeroTurn' should be true.
+    Create a new interesting 6-max Texas Hold'em scenario.
+    - Effective stacks: 100BB (1000 chips).
+    - Determine Hero's position randomly or pick an interesting spot (e.g., Hero in CO vs BTN 3-bet).
+    - Define 6 players in the 'players' array.
+    - Ensure Hero has 2 hole cards defined in 'cards'.
+    - Opponents should have empty 'cards' arrays unless it is Showdown (initially invisible).
+    - Set 'isHeroTurn' to true.
+    - Provide initial GTO analysis.
   `;
 
   const response = await ai.models.generateContent({
@@ -44,21 +50,7 @@ export const startNewScenario = async (): Promise<GameState> => {
     config: {
       systemInstruction: SYSTEM_INSTRUCTION,
       responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-           // We need to include heroHand here explicitly for initialization
-           heroHand: {
-             type: Type.ARRAY,
-             items: {
-               type: Type.OBJECT,
-               properties: { rank: { type: Type.STRING }, suit: { type: Type.STRING } }
-             }
-           },
-           ...GameStateSchema.properties
-        },
-        required: ["heroHand", "street", "pot", "board", "heroStack", "villainStack", "isHeroTurn", "analysis"]
-      }
+      responseSchema: GameStateSchema
     }
   });
 
@@ -69,31 +61,30 @@ export const startNewScenario = async (): Promise<GameState> => {
 export const processPlayerAction = async (currentState: GameState, action: string, amount?: number): Promise<GameState> => {
   const ai = getClient();
 
-  // We strip analysis from input to save tokens, the model only needs the state facts
+  // Strip heavy history/analysis to save tokens, keep state facts
   const statePayload = {
     street: currentState.street,
     pot: currentState.pot,
     board: currentState.board,
-    heroHand: currentState.heroHand,
-    heroStack: currentState.heroStack,
-    villainStack: currentState.villainStack,
-    currentBet: currentState.currentBet
+    players: currentState.players.map(p => ({
+      ...p,
+      // ensure we send hero cards back so AI remembers them
+      cards: p.isHero ? p.cards : (currentState.street === 'Showdown' ? p.cards : []) 
+    })),
+    currentToCall: currentState.currentToCall
   };
 
   const prompt = `
-    Current Game State: ${JSON.stringify(statePayload)}
-    
+    Current State: ${JSON.stringify(statePayload)}
     HERO ACTION: ${action} ${amount ? `Amount: ${amount}` : ''}
     
     Task:
-    1. Update the game state based on Hero's action.
-    2. Analyze Hero's action against GTO solution (Mistake? Standard? Brilliant?).
-    3. Determine Villain's response (Call, Fold, Raise) based on optimal strategy.
-    4. Advance street if necessary (deal cards).
-    5. Update stacks and pot.
-    6. Return the NEW full Game State.
-    
-    Note: If Hero folds, end the game. If Showdown, reveal villain hand.
+    1. Validate Hero action.
+    2. Update stacks/pot.
+    3. If hand continues, simulate actions for other players until it returns to Hero or street ends.
+    4. If street ends, deal next card(s).
+    5. Provide GTO analysis of Hero's move and the new situation.
+    6. If Showdown, reveal participating opponent hands in 'cards'.
   `;
 
   const response = await ai.models.generateContent({
@@ -109,12 +100,8 @@ export const processPlayerAction = async (currentState: GameState, action: strin
   if (!response.text) throw new Error("Failed to process turn");
   const newState = JSON.parse(response.text);
   
-  // Persist the static hero hand/position as the model might not return them in the simplified schema or strictly
   return {
     ...newState,
-    heroHand: currentState.heroHand,
-    heroPosition: currentState.heroPosition,
-    villainPosition: currentState.villainPosition,
     scenarioId: currentState.scenarioId
   };
 };

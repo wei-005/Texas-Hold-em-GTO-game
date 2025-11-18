@@ -1,8 +1,10 @@
-import React, { useState, useEffect } from 'react';
+
+import React, { useState, useEffect, useRef } from 'react';
 import PokerTable from './components/PokerTable';
 import ControlPanel from './components/ControlPanel';
 import AnalysisFeed from './components/AnalysisFeed';
 import { startNewScenario, processPlayerAction } from './services/geminiService';
+import { audioService } from './services/audioService';
 import { GameState } from './types';
 
 const App: React.FC = () => {
@@ -10,15 +12,48 @@ const App: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [analysisHistory, setAnalysisHistory] = useState<string[]>([]);
+  
+  // Track previous state to trigger sounds
+  const prevStreetRef = useRef<string | null>(null);
+  const prevIsHeroTurnRef = useRef<boolean>(false);
 
-  // Initialize metadata or setup only once if needed.
-  // Since we don't need cameras, we just skip manual metadata calls here for simplicity as per instructions to include them in generated files.
+  useEffect(() => {
+    // Audio triggers based on state changes
+    if (!gameState) return;
+
+    // New Street dealt
+    if (prevStreetRef.current !== gameState.street && gameState.street !== 'Preflop') {
+        audioService.playCardSlide();
+    }
+
+    // Hero's turn notification
+    if (!prevIsHeroTurnRef.current && gameState.isHeroTurn && !gameState.gameEnded) {
+        audioService.playTurnAlert();
+    }
+
+    // Game End
+    if (gameState.gameEnded && gameState.winnerId) {
+        const hero = gameState.players.find(p => p.isHero);
+        if (hero && hero.id === gameState.winnerId) {
+            audioService.playWinSound();
+        }
+    }
+
+    prevStreetRef.current = gameState.street;
+    prevIsHeroTurnRef.current = gameState.isHeroTurn;
+  }, [gameState]);
 
   const handleStartGame = async () => {
+    // Initialize audio on user interaction
+    audioService.init();
+    audioService.playCardSlide();
+
     setLoading(true);
     setError(null);
     setGameState(null);
     setAnalysisHistory([]);
+    prevStreetRef.current = null;
+    
     try {
       const initial = await startNewScenario();
       setGameState(initial);
@@ -38,8 +73,6 @@ const App: React.FC = () => {
     
     setLoading(true);
     setError(null);
-    
-    // Optimistic update (optional, skipping for strict correctness with GTO engine)
     
     try {
       const newState = await processPlayerAction(gameState, action, amount);
@@ -65,54 +98,60 @@ const App: React.FC = () => {
         <header className="p-4 flex justify-between items-center bg-gray-900 border-b border-gray-800 z-10">
           <div className="flex items-center gap-3">
              <div className="w-8 h-8 bg-gold rounded-md flex items-center justify-center text-black font-bold text-lg shadow-lg">♠</div>
-             <h1 className="text-xl font-bold tracking-wide">GTO Poker Master</h1>
+             <h1 className="text-xl font-bold tracking-wide hidden md:block">GTO Poker Master</h1>
+             <span className="text-xs bg-gray-800 px-2 py-1 rounded text-gray-400 border border-gray-700">6-MAX LIVE</span>
           </div>
           <button 
             onClick={handleStartGame} 
             disabled={loading}
-            className="bg-gold hover:bg-gold-light text-black font-bold py-2 px-6 rounded-full shadow-lg transition-transform hover:scale-105 disabled:opacity-50"
+            className="bg-gold hover:bg-gold-light text-black font-bold py-2 px-6 rounded-full shadow-lg transition-transform hover:scale-105 disabled:opacity-50 text-sm md:text-base"
           >
-            {loading ? "Dealing..." : "New Scenario"}
+            {loading ? "Dealing..." : "New Hand"}
           </button>
         </header>
 
         {/* Game Content */}
-        <main className="flex-1 p-4 md:p-8 overflow-y-auto flex flex-col items-center justify-center bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-gray-800 via-gray-900 to-black">
+        <main className="flex-1 p-2 md:p-4 overflow-y-auto flex flex-col items-center justify-center bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-gray-800 via-gray-900 to-black relative">
+           
+           {/* Background Texture */}
+           <div className="absolute inset-0 opacity-5 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] pointer-events-none"></div>
+
            {error && (
-             <div className="mb-4 p-4 bg-red-900/50 border border-red-500 text-red-200 rounded-lg max-w-md text-center">
+             <div className="mb-4 p-4 bg-red-900/50 border border-red-500 text-red-200 rounded-lg max-w-md text-center z-50">
                {error}
              </div>
            )}
            
            {!gameState && !loading && !error && (
-             <div className="text-center max-w-lg">
-               <h2 className="text-3xl font-bold mb-4 text-white">Master GTO Strategy</h2>
-               <p className="text-gray-400 mb-8">
-                 Generate unlimited classic Texas Hold'em scenarios. 
-                 Play against a world-class AI engine that adapts and explains every move.
+             <div className="text-center max-w-lg z-10">
+               <h2 className="text-4xl font-bold mb-4 text-white drop-shadow-lg">Master the Table</h2>
+               <p className="text-gray-400 mb-8 text-lg">
+                 Experience high-stakes 6-Max Hold'em. 
+                 <br/>
+                 Real-time GTO coaching. Immersive audio.
                </p>
                <button 
                  onClick={handleStartGame}
-                 className="bg-gold text-black font-bold text-xl py-3 px-8 rounded-lg shadow-card hover:shadow-gold/50 transition-all"
+                 className="bg-gradient-to-r from-gold to-yellow-600 text-black font-bold text-xl py-4 px-10 rounded-xl shadow-2xl hover:shadow-gold/50 transition-all hover:-translate-y-1"
                >
-                 Deal Cards
+                 Sit Down & Deal
                </button>
              </div>
            )}
 
            {gameState && (
              <>
-               <PokerTable gameState={gameState} villainHandRevealed={gameState.gameEnded} />
+               <PokerTable gameState={gameState} />
                <ControlPanel 
                   gameState={gameState} 
                   onAction={handleAction} 
                   disabled={loading || !gameState.isHeroTurn || gameState.gameEnded} 
                />
                {gameState.gameEnded && (
-                 <div className="mt-6">
+                 <div className="mt-6 z-30 animate-fade-in">
                    <button 
                      onClick={handleStartGame}
-                     className="bg-white text-gray-900 font-bold py-3 px-8 rounded-full shadow-lg hover:bg-gray-100"
+                     className="bg-white text-gray-900 font-bold py-3 px-8 rounded-full shadow-[0_0_20px_rgba(255,255,255,0.3)] hover:bg-gray-100 hover:scale-110 transition-all"
                    >
                      Next Hand
                    </button>
@@ -126,8 +165,11 @@ const App: React.FC = () => {
         {loading && (
             <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
                 <div className="flex flex-col items-center gap-4">
-                    <div className="w-12 h-12 border-4 border-gold border-t-transparent rounded-full animate-spin"></div>
-                    <span className="text-gold font-bold tracking-widest animate-pulse">CALCULATING GTO...</span>
+                    <div className="relative">
+                        <div className="w-16 h-16 border-4 border-gray-700 rounded-full"></div>
+                        <div className="absolute top-0 left-0 w-16 h-16 border-4 border-gold border-t-transparent rounded-full animate-spin"></div>
+                    </div>
+                    <span className="text-gold font-bold tracking-widest animate-pulse">THINKING...</span>
                 </div>
             </div>
         )}
