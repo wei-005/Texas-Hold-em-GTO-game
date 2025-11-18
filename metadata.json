@@ -1,0 +1,5 @@
+{
+  "name": "GTO Poker Master",
+  "description": "An interactive Texas Hold'em GTO trainer powered by Gemini. Analyze classic scenarios and improve your game theory optimal strategy.",
+  "requestFramePermissions": []
+}
